@@ -17,6 +17,7 @@ bash ~/dev/video-toolkit/v <サブコマンド> <素材フォルダ or ファイ
 | `shots` | シーン検出＋代表フレーム抽出＋コンタクトシート | `frames/*.jpg` / `*_sheet_*.jpg` / `shots.json` |
 | `transcribe` | 文字起こし → 字幕 | `.srt` / `.vtt` / `.txt` / `.words.json` |
 | `qc` | 納品QC（尺・解像度・fps・LUFS・黒フレーム・無音） | `qc.md` / `qc.json` |
+| `cut` | カットリストJSONを実際に書き出す（編集の実行） | `.mp4` / カット表 `.md` |
 | `test` | 合成クリップで4本すべてを自己テスト | — |
 
 出力先は `~/dev/video-toolkit/out/<素材フォルダ名>/`。
