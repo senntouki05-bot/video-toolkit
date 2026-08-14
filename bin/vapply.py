@@ -29,6 +29,7 @@ from vanalyze import (  # noqa: E402
     MotionIndex, color_stats, cube_from_stats, grade_from_stats, pick_evenly,
     sample_rgb, scene_scores, shots_from_scores,
 )
+from vlogcurve import LOG_KINDS, looks_like_log, normalize_fn, transform_frames  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 MIN_CUT = 0.5  # これ未満のカットは作らない
@@ -181,6 +182,9 @@ def main() -> int:
     ap.add_argument("--duration", type=float, help="完成尺 秒（既定: 参考動画と同じ）")
     ap.add_argument("--out", help="出力先（既定: ~/dev/video-toolkit/out/<名前>/apply）")
     ap.add_argument("--threshold", type=float, default=0.3, help="素材のショット境界しきい値（既定 0.3）")
+    ap.add_argument("--src-log", choices=LOG_KINDS,
+                    help="素材がlog収録のとき指定（apple-log2=iPhone 17 Pro）。"
+                         "復号＋色域変換込みのLUTを生成し grade に使う")
     ap.add_argument("--music", action="store_true", help="参考BPMに合う Apple Loops でBGMも組む")
     ap.add_argument("--loops-dir", default="/Library/Audio/Apple Loops",
                     help="ループ置き場（既定: /Library/Audio/Apple Loops）")
@@ -236,15 +240,22 @@ def main() -> int:
     # --- 色: 選ばれた区間の中間フレームで実測 → 参考へ寄せる ---
     grade = "none"
     src_color = None
+    pre_fn = normalize_fn(args.src_log) if args.src_log else None
+    if not args.src_log and looks_like_log(probe(clips[0]["path"])):
+        log("⚠️ 素材がlog/広色域収録の可能性（色メタデータがbt2020系）。"
+            "Apple Log素材なら --src-log apple-log2 を付けること")
     if style.get("color"):
-        log("色を合わせ中 …")
+        log("色を合わせ中 …" + (f"（{args.src_log} を復号してから測定）" if args.src_log else ""))
         mids = pick_evenly(
             [(clips[s["clip"]]["path"], (s["in"] + s["out"]) / 2) for s in placed], 24)
         frames = [f for p, t in mids if (f := sample_rgb(p, t)) is not None]
+        if pre_fn is not None:
+            frames = transform_frames(frames, pre_fn)
         src_color = color_stats(frames)
         if src_color:
             grade = grade_from_stats(src_color, style["color"])
-            log(f"  素材: 輝度{src_color['mean_luma']}/彩度{src_color['mean_saturation']} → "
+            log(f"  素材{'（正規化後）' if args.src_log else ''}: "
+                f"輝度{src_color['mean_luma']}/彩度{src_color['mean_saturation']} → "
                 f"参考: 輝度{style['color']['mean_luma']}/彩度{style['color']['mean_saturation']}")
         else:
             log("  ! 素材の色サンプルに失敗（色補正なし）")
@@ -253,14 +264,23 @@ def main() -> int:
     actual_total = sum(s["out"] - s["in"] for s in placed)
 
     # --- Resolveで仕上げる人向けに、同じ色変換を .cube LUT でも添える ---
+    # log素材のときは復号＋色域変換を内蔵したLUTになり、grade もこのLUTを使う
+    # （curves は log 復号を表現できないため）
     cube_path = None
     if src_color and style.get("color"):
-        cube_text = cube_from_stats(src_color, style["color"],
-                                    title=f"video-toolkit match LUT <- {Path(style['source']).name}")
+        cube_text = cube_from_stats(src_color, style["color"], pre_fn=pre_fn,
+                                    title=f"video-toolkit match LUT <- {Path(style['source']).name}"
+                                          + (f" (input: {args.src_log})" if args.src_log else ""))
         if cube_text:
             cube_path = d / "match.cube"
             cube_path.write_text(cube_text, encoding="utf-8")
             log(f"  Resolve用LUTも生成: {cube_path.name}")
+    if args.src_log:
+        if cube_path:
+            grade = f"lut3d='{cube_path}'"
+        else:
+            log("  ⚠️ log素材だがLUTを作れなかった（旧style.json?）→ 色補正なしで書き出す")
+            grade = "none"
 
     # --- BGM ---
     music = None
@@ -310,7 +330,7 @@ def main() -> int:
     md = [f"# スタイル転写 — {target.name} × {Path(style['source']).name}", "",
           f"- 参考 {len(ref_shots)}カット/{ref_total:.1f}秒 → 生成 {len(placed)}カット/{actual_total:.1f}秒"
           + (f"（{dropped}カット欠落）" if dropped else ""),
-          f"- 色補正: `{'あり（curves 百分位マッチ）' if grade != 'none' else 'なし'}`"
+          f"- 色補正: `{('あり（' + args.src_log + '復号+マッチLUT）') if args.src_log and grade != 'none' else ('あり（curves 百分位マッチ）' if grade != 'none' else 'なし')}`"
           f" / BGM: `{Path(music['src']).name if music else 'なし'}`", "",
           "| # | 枠(秒) | 素材 | IN | OUT | 動き |", "|---|---|---|---|---|---|"]
     for i, s in enumerate(placed, 1):

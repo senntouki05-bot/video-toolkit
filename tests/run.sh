@@ -123,6 +123,78 @@ sys.exit(0 if da < db * 0.6 else 1)\""
 check "apply も match.cube を出した"   "[ -s '$OUT/apply/match.cube' ]"
 
 echo
+echo "=== 6b. Apple Log 2（白書アンカー検証 → 疑似log素材の往復 → マッチLUT）==="
+check "カーブ定数=白書アンカー4点と一致" "python3 -c \"
+import sys
+sys.path.insert(0, '$REPO/lib')
+from vlogcurve import log_encode
+# Apple Log 2 White Paper 公表値（10bit full range）: 0%→154 / 18%→500 / 90%→697 / 1200%→1023
+anchors = [(0.0, 154), (0.18, 500), (0.9, 697), (12.0, 1023)]
+sys.exit(0 if all(abs(log_encode(r)*1023 - c) <= 1.0 for r, c in anchors) else 1)\""
+check "AWG→709合成行列の健全性"        "python3 -c \"
+import sys
+sys.path.insert(0, '$REPO/lib')
+from vlogcurve import MATS
+M = MATS['apple-log2']
+sys.exit(0 if max(abs(sum(r)-1) for r in M) < 0.02 and 1.4 < M[0][0] < 2.0 else 1)\""
+# 疑似 Apple Log 2 素材を生成（lib自身の逆変換で clip_a を log化）
+python3 -c "
+import sys; sys.path.insert(0, '$REPO/lib')
+from vlogcurve import logify_fn
+from vanalyze import build_cube_fn
+open('$OUT/_lutsrc/logify.cube', 'w').write(build_cube_fn(logify_fn('apple-log2'), title='test logify'))
+"
+ffmpeg -hide_banner -loglevel error -y -i "$FIX/clip_a.mov" -vf "lut3d=$OUT/_lutsrc/logify.cube" \
+  -an -c:v libx264 -preset ultrafast -pix_fmt yuv420p "$OUT/_lutsrc/clip_log2.mp4"
+bash "$REPO/v" lut apple-log2 --out "$OUT" || ng "変換LUT生成が異常終了"
+check "変換LUT(apple-log2→709)が出来た" "grep -q '^LUT_3D_SIZE 33' '$OUT/lut/apple-log2-to-rec709.cube'"
+check "疑似log素材を変換LUT一発で復元"  "python3 -c \"
+import sys
+sys.path.insert(0, '$REPO/lib')
+from vanalyze import sample_rgb, color_stats, color_distance, run_ffmpeg_bytes
+orig, src = '$FIX/clip_a.mov', '$OUT/_lutsrc/clip_log2.mp4'
+cube = '$OUT/lut/apple-log2-to-rec709.cube'
+times = [3.0, 11.0, 16.0]
+base = color_stats([f for t in times if (f := sample_rgb(orig, t))])
+raw  = color_stats([f for t in times if (f := sample_rgb(src, t))])
+def lutf(t):
+    rc, d, _ = run_ffmpeg_bytes(['-ss', str(t), '-i', src, '-frames:v', '1',
+        '-vf', 'lut3d=' + cube + ',scale=64:36', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'])
+    return bytes(d[:64*36*3]) if rc == 0 and len(d) >= 64*36*3 else None
+back = color_stats([f for t in times if (f := lutf(t))])
+db, da = color_distance(raw, base), color_distance(back, base)
+print(f'    元との色距離: log素材 {db} → 変換後 {da}', file=sys.stderr)
+sys.exit(0 if db > 20 and da < 8 and da < db * 0.4 else 1)\""
+bash "$REPO/v" lut "$OUT/style/style.json" --src "$OUT/_lutsrc/clip_log2.mp4" \
+  --src-log apple-log2 --out "$OUT" || ng "log用マッチLUTが異常終了"
+check "マッチLUTにlog前段が内蔵された"  "grep -q 'input: apple-log2' '$OUT/lut/match.cube'"
+check "log素材に直接当てて参考へ寄った" "python3 -c \"
+import json, sys
+sys.path.insert(0, '$REPO/lib')
+from vanalyze import sample_rgb, color_stats, color_distance, run_ffmpeg_bytes
+ref = json.load(open('$OUT/style/style.json'))['color']
+src, cube = '$OUT/_lutsrc/clip_log2.mp4', '$OUT/lut/match.cube'
+times = [3.0, 11.0, 16.0]
+raw = color_stats([f for t in times if (f := sample_rgb(src, t))])
+def lutf(t):
+    rc, d, _ = run_ffmpeg_bytes(['-ss', str(t), '-i', src, '-frames:v', '1',
+        '-vf', 'lut3d=' + cube + ',scale=64:36', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'])
+    return bytes(d[:64*36*3]) if rc == 0 and len(d) >= 64*36*3 else None
+aft = color_stats([f for t in times if (f := lutf(t))])
+db, da = color_distance(raw, ref), color_distance(aft, ref)
+print(f'    参考との色距離: {db} → {da}', file=sys.stderr)
+sys.exit(0 if da < db * 0.5 else 1)\""
+# apply の --src-log 経路（logのままカット生成→lut3d gradeで書き出しまで）
+# ⚠️ out/ 配下は collect_media が素材として拾わない仕様なので、素材は out/ の外に置く
+LOGSRC="$(mktemp -d)"
+trap 'rm -rf "$LOGSRC"' EXIT
+cp "$OUT/_lutsrc/clip_log2.mp4" "$LOGSRC/"
+bash "$REPO/v" apply "$LOGSRC" --style "$OUT/style/style.json" --out "$OUT/log_apply" \
+  --src-log apple-log2 --render || ng "apply --src-log が異常終了"
+check "applyのgradeがlog対応LUTになった" "python3 -c \"import json,sys; c=json.load(open('$OUT/log_apply/apply/cutlist.json')); sys.exit(0 if c['output']['grade'].startswith('lut3d=') else 1)\""
+check "log素材のまま書き出しまで通った"  "[ -s '$OUT/log_apply/apply/cutlist.mp4' ]"
+
+echo
 echo "=== 7. transcribe（clip_a のみ・モデル読込に時間がかかります）==="
 bash "$REPO/v" transcribe "$FIX/clip_a.mov" --out "$OUT" || ng "transcribe が異常終了"
 check "SRT が生成された"               "[ -s '$OUT/transcribe/01_clip_a.srt' ]"

@@ -21,7 +21,8 @@ video-toolkit — 撮影素材の機械作業をClaude Codeから叩く
   qc          納品QC（尺・解像度・fps・LUFS音量・黒フレーム・無音）
   style       参考動画の編集スタイルを数値化 → style.json（リズム・色・音）
   apply       style.json を素材に転写しカットリスト自動生成（--render で書き出しまで）
-  lut         参考動画から .cube 3D LUT を自動生成（--src 指定でマッチLUT＝本命）
+  lut         参考動画から .cube 3D LUT を自動生成（--src でマッチLUT＝本命 /
+              Apple Log 2素材は --src-log apple-log2 / 変換LUTのみ: v lut apple-log2）
   cut         カットリストJSONを読んで実際に書き出す
   music       Apple Loops のステムを重ねてBGMを1本に組む
   test        合成クリップを作って全ツールを自己テスト（引数不要）
