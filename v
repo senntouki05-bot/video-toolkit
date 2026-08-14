@@ -38,6 +38,7 @@ case "$cmd" in
   transcribe) exec "$PY" "$REPO/bin/vtranscribe.py" "$@" ;;
   qc)         exec "$PY" "$REPO/bin/vqc.py" "$@" ;;
   cut)        exec "$PY" "$REPO/bin/vcut.py" "$@" ;;
+  music)      exec "$PY" "$REPO/bin/vmusic.py" "$@" ;;
   test)       exec bash "$REPO/tests/run.sh" "$@" ;;
   ""|-h|--help|help) usage; exit 0 ;;
   *) echo "不明なサブコマンド: $cmd" >&2; echo >&2; usage >&2; exit 2 ;;
