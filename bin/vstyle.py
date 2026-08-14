@@ -156,6 +156,7 @@ def main() -> int:
            "## 次の一手", "",
            "```",
            f"bash ~/dev/video-toolkit/v apply <素材フォルダ> --style {d / 'style.json'}",
+           f"bash ~/dev/video-toolkit/v lut {d / 'style.json'} --src <素材フォルダ>",
            "```", "",
            "※ このファイルが写せるのは **リズム・色・音量・テンポ** まで。",
            "  被写体の選び方・ストーリー構成・カメラワークは写せない（applyのたたき台を人間が直す）。"]

@@ -54,6 +54,7 @@ check "style.md が生成された"          "[ -s '$OUT/style/style.md' ]"
 check "3ショット以上を検出した"        "python3 -c \"import json,sys; s=json.load(open('$OUT/style/style.json')); sys.exit(0 if s['rhythm']['shot_count']>=3 else 1)\""
 check "色の百分位が採れた"             "python3 -c \"import json,sys; s=json.load(open('$OUT/style/style.json')); sys.exit(0 if len(s['color']['percentiles']['r'])==7 else 1)\""
 check "音量が実測された"               "python3 -c \"import json,sys; s=json.load(open('$OUT/style/style.json')); sys.exit(0 if isinstance(s['audio']['lufs'],(int,float)) else 1)\""
+check "LUT用の256binヒストを保持"      "python3 -c \"import json,sys; s=json.load(open('$OUT/style/style.json')); sys.exit(0 if len(s['color']['hist']['r'])==256 else 1)\""
 
 echo
 echo "=== 5. apply（fixture 3本へ転写 → BGM → 書き出しまで）==="
@@ -90,7 +91,39 @@ for x in c:
 sys.exit(0)\""
 
 echo
-echo "=== 6. transcribe（clip_a のみ・モデル読込に時間がかかります）==="
+echo "=== 6. lut（色をずらした素材を参考へ引き戻せるか）==="
+# 暖色・低彩度・明るめにわざと崩した素材を作る → マッチLUTが参考(clip_a)へ寄せ戻すはず
+mkdir -p "$OUT/_lutsrc"
+ffmpeg -hide_banner -loglevel error -y -i "$FIX/clip_a.mov" \
+  -vf "eq=brightness=0.12:saturation=0.5,colortemperature=temperature=3500" \
+  -an -c:v libx264 -preset ultrafast -pix_fmt yuv420p "$OUT/_lutsrc/clip_warm.mp4"
+bash "$REPO/v" lut "$OUT/style/style.json" --src "$OUT/_lutsrc/clip_warm.mp4" --out "$OUT" || ng "lut が異常終了"
+check "match.cube が生成された"        "[ -s '$OUT/lut/match.cube' ]"
+check "cubeヘッダが規格通り"           "grep -q '^LUT_3D_SIZE 33' '$OUT/lut/match.cube'"
+check "格子点数が 33³=35937"           "[ \$(grep -cE '^[01]\.[0-9]{6} ' '$OUT/lut/match.cube') -eq 35937 ]"
+check "使い方メモ lut.md が出来た"     "[ -s '$OUT/lut/lut.md' ]"
+check "LUT適用で参考との色距離が縮んだ（独立再計測）" "python3 -c \"
+import json, sys
+sys.path.insert(0, '$REPO/lib')
+from vanalyze import sample_rgb, color_stats, color_distance, run_ffmpeg_bytes
+ref = json.load(open('$OUT/style/style.json'))['color']
+src, cube = '$OUT/_lutsrc/clip_warm.mp4', '$OUT/lut/match.cube'
+times = [3.0, 11.0, 16.0]
+bef = color_stats([f for t in times if (f := sample_rgb(src, t))])
+def lutf(t):
+    rc, d, _ = run_ffmpeg_bytes(['-ss', str(t), '-i', src, '-frames:v', '1',
+        '-vf', 'lut3d=' + cube + ',scale=64:36',
+        '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'])
+    return bytes(d[:64*36*3]) if rc == 0 and len(d) >= 64*36*3 else None
+aft = color_stats([f for t in times if (f := lutf(t))])
+db, da = color_distance(bef, ref), color_distance(aft, ref)
+print(f'    色距離 {db} → {da}', file=sys.stderr)
+# 絶対差-2では彩度補正だけの改善(2.4)が素通しした（2026-08-15変異テストで実測）→ 相対40%改善を要求
+sys.exit(0 if da < db * 0.6 else 1)\""
+check "apply も match.cube を出した"   "[ -s '$OUT/apply/match.cube' ]"
+
+echo
+echo "=== 7. transcribe（clip_a のみ・モデル読込に時間がかかります）==="
 bash "$REPO/v" transcribe "$FIX/clip_a.mov" --out "$OUT" || ng "transcribe が異常終了"
 check "SRT が生成された"               "[ -s '$OUT/transcribe/01_clip_a.srt' ]"
 check "言語が ja と判定された"         "grep -q '\"language\": \"ja\"' '$OUT/transcribe/transcribe.json'"

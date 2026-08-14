@@ -26,8 +26,8 @@ from vcommon import (  # noqa: E402
     report_paths, write_json,
 )
 from vanalyze import (  # noqa: E402
-    MotionIndex, color_stats, grade_from_stats, pick_evenly, sample_rgb,
-    scene_scores, shots_from_scores,
+    MotionIndex, color_stats, cube_from_stats, grade_from_stats, pick_evenly,
+    sample_rgb, scene_scores, shots_from_scores,
 )
 
 REPO = Path(__file__).resolve().parent.parent
@@ -252,6 +252,16 @@ def main() -> int:
     d = out_dir(target, args.out, "apply")
     actual_total = sum(s["out"] - s["in"] for s in placed)
 
+    # --- Resolveで仕上げる人向けに、同じ色変換を .cube LUT でも添える ---
+    cube_path = None
+    if src_color and style.get("color"):
+        cube_text = cube_from_stats(src_color, style["color"],
+                                    title=f"video-toolkit match LUT <- {Path(style['source']).name}")
+        if cube_text:
+            cube_path = d / "match.cube"
+            cube_path.write_text(cube_text, encoding="utf-8")
+            log(f"  Resolve用LUTも生成: {cube_path.name}")
+
     # --- BGM ---
     music = None
     if args.music:
@@ -309,8 +319,11 @@ def main() -> int:
                   f"{hhmmss(s['out'])} | {c['motion'].mean(s['in'], s['out']):.3f} |")
     md += ["", "## 直し方", "",
            "- カットの差し替え・尺調整は `cutlist.json` の数字を直して下を再実行:",
-           "```", f"bash ~/dev/video-toolkit/v cut {cl_path}", "```", "",
-           "※ 転写できたのはリズム・色・音量・テンポまで。被写体の選択とストーリーは要人間チェック。"]
+           "```", f"bash ~/dev/video-toolkit/v cut {cl_path}", "```"]
+    if cube_path:
+        md += ["- Resolve で仕上げる場合は同じ色変換の `match.cube` をカラーページのLUTとして使える:",
+               f"  `{cube_path}`"]
+    md += ["", "※ 転写できたのはリズム・色・音量・テンポまで。被写体の選択とストーリーは要人間チェック。"]
     if (fmt.get("height") or 0) > (fmt.get("width") or 1) and clips:
         md.append("※ 参考が縦型のため、横型素材は上下黒帯でパディングされる（クロップは手動）。")
     (d / "apply.md").write_text("\n".join(md) + "\n", encoding="utf-8")
@@ -318,7 +331,7 @@ def main() -> int:
     log(f"\n生成: {len(placed)}カット / {actual_total:.1f}秒 / 色補正 {'あり' if grade != 'none' else 'なし'}"
         f" / BGM {'あり' if music else 'なし'}")
 
-    outputs = [cl_path, d / "apply.md"]
+    outputs = [cl_path, d / "apply.md"] + ([cube_path] if cube_path else [])
     if args.render:
         log("\n書き出し中 …")
         r = subprocess.run([sys.executable, str(REPO / "bin" / "vcut.py"), str(cl_path)],

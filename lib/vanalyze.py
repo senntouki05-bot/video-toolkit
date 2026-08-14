@@ -153,10 +153,30 @@ def color_stats(frames: list[bytes]) -> dict | None:
         "qs": COLOR_QS,
         "percentiles": {ch: [pct(hist[k], q) for q in COLOR_QS]
                         for k, ch in enumerate(("r", "g", "b"))},
+        "hist": {ch: hist[k] for k, ch in enumerate(("r", "g", "b"))},  # LUT生成に使う全256bin
         "mean_saturation": round(sat_sum / n_px, 1),
         "mean_luma": round(luma_sum / n_px, 1),
         "n_frames": len(frames),
     }
+
+
+def sat_ratio(src: dict, ref: dict) -> float:
+    """彩度の補正係数。0.7〜1.4 に制限（内装の色を壊さない＝GRADESと同じ思想）。"""
+    s, r = src.get("mean_saturation", 0), ref.get("mean_saturation", 0)
+    if not s or not r:
+        return 1.0
+    return max(0.7, min(1.4, r / s))
+
+
+def color_distance(a: dict, b: dict) -> float:
+    """百分位どうしの平均絶対差（0-255）。LUT適用の前後比較＝実測の物差し。"""
+    total = 0
+    n = 0
+    for ch in ("r", "g", "b"):
+        for x, y in zip(a["percentiles"][ch], b["percentiles"][ch]):
+            total += abs(x - y)
+            n += 1
+    return round(total / n, 2) if n else 0.0
 
 
 def grade_from_stats(src: dict, ref: dict) -> str:
@@ -180,12 +200,88 @@ def grade_from_stats(src: dict, ref: dict) -> str:
         chans.append(" ".join(f"{x:g}/{y:g}" for x, y in pts))
     parts = [f"curves=r='{chans[0]}':g='{chans[1]}':b='{chans[2]}'"]
 
-    s_sat, r_sat = src.get("mean_saturation", 0), ref.get("mean_saturation", 0)
-    if s_sat and r_sat:
-        ratio = max(0.7, min(1.4, r_sat / s_sat))
-        if abs(ratio - 1.0) > 0.03:
-            parts.append(f"eq=saturation={ratio:.2f}")
+    ratio = sat_ratio(src, ref)
+    if abs(ratio - 1.0) > 0.03:
+        parts.append(f"eq=saturation={ratio:.2f}")
     return ",".join(parts)
+
+
+# ---------------------------------------------------------------- LUT (.cube)
+
+def cdf_from_hist(hist: list[int]) -> list[float]:
+    """256binヒストグラム → 累積分布 0..1。空なら一様分布（＝恒等写像になる）。"""
+    total = sum(hist)
+    if not total:
+        return [(v + 0.5) / 256 for v in range(256)]
+    out = []
+    acc = 0
+    for c in hist:
+        acc += c
+        out.append(acc / total)
+    return out
+
+
+IDENTITY_CDF = [(v + 0.5) / 256 for v in range(256)]
+
+
+def match_map(src_cdf: list[float], ref_cdf: list[float]) -> list[int]:
+    """ヒストグラムマッチング: 素材の値 v → 参考で同じ累積位置になる値。単調非減少。"""
+    out = []
+    j = 0
+    for v in range(256):
+        q = src_cdf[v]
+        while j < 255 and ref_cdf[j] < q:
+            j += 1
+        out.append(j)
+    return out
+
+
+def build_cube(maps: list[list[int]], sat: float = 1.0, size: int = 33,
+               title: str = "video-toolkit LUT") -> str:
+    """RGB各256マップ＋彩度係数 → .cube テキスト（Resolve/FCP/ffmpeg lut3d 互換）。
+
+    行の並びは規格通り R が最速で回る。彩度は Rec.709 輝度を軸に回す（3D LUTである意味）。
+    """
+    def m1(mp: list[int], x: float) -> float:
+        v = x * 255.0
+        i = int(v)
+        if i >= 255:
+            return mp[255] / 255.0
+        f = v - i
+        return (mp[i] * (1.0 - f) + mp[i + 1] * f) / 255.0
+
+    lines = [f'TITLE "{title}"', f"LUT_3D_SIZE {size}",
+             "DOMAIN_MIN 0.0 0.0 0.0", "DOMAIN_MAX 1.0 1.0 1.0"]
+    n = size - 1
+    for b in range(size):
+        for g in range(size):
+            for r in range(size):
+                rr, gg, bb = m1(maps[0], r / n), m1(maps[1], g / n), m1(maps[2], b / n)
+                if sat != 1.0:
+                    y = 0.2126 * rr + 0.7152 * gg + 0.0722 * bb
+                    rr, gg, bb = y + sat * (rr - y), y + sat * (gg - y), y + sat * (bb - y)
+                lines.append(f"{min(1.0, max(0.0, rr)):.6f} "
+                             f"{min(1.0, max(0.0, gg)):.6f} "
+                             f"{min(1.0, max(0.0, bb)):.6f}")
+    return "\n".join(lines) + "\n"
+
+
+def cube_from_stats(src: dict | None, ref: dict, size: int = 33,
+                    with_sat: bool = True, title: str = "video-toolkit LUT") -> str | None:
+    """色統計から .cube を作る。src=None は「素材が標準露出」という仮定の恒等入力。
+
+    ref に hist（全256bin）が無い旧 style.json では作れないので None を返す。
+    """
+    if "hist" not in ref:
+        return None
+    if src is not None and "hist" not in src:
+        return None
+    maps = []
+    for ch in ("r", "g", "b"):
+        s_cdf = cdf_from_hist(src["hist"][ch]) if src is not None else IDENTITY_CDF
+        maps.append(match_map(s_cdf, cdf_from_hist(ref["hist"][ch])))
+    sat = sat_ratio(src, ref) if (src is not None and with_sat) else 1.0
+    return build_cube(maps, sat=sat, size=size, title=title)
 
 
 # ---------------------------------------------------------------- 音
