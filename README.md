@@ -1,7 +1,7 @@
 # video-toolkit
 
 撮影素材の**機械作業**をClaude Codeから叩くツール束。ffmpeg + faster-whisper、**全部ローカル実行**。
-（調査メモの正本は Obsidian `30_Resources/Claude Codeで動画編集_リサーチ_2026-08-15.md`）
+（調査メモの正本は Obsidian `QUIRIO/20_映像・SNS事業/13_社内動画編集ツール/Claude Codeで動画編集_リサーチ_2026-08-15.md`）
 
 ## 使い方
 
